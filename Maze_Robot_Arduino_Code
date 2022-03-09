@@ -1,0 +1,380 @@
+#include <Servo.h>
+
+Servo myservo;
+int pos = 0;
+
+// Left wheel motor
+int motorL = 8;
+int motorL_REV = 37;
+int motorL_FOR = 36;
+int encL_ch1 = 19;
+int encL_ch2 = 38;
+volatile long encCountL = 0;
+
+void isr_process_encoderL();
+
+// Right wheel motor
+int motorR = 12;
+int motorR_FOR = 34;
+int motorR_REV = 35;
+int encR_ch1 = 18;
+int encR_ch2 = 31;
+volatile long encCountR = 0;
+
+void isr_process_encoderR();
+
+// Arm motor
+int motorA = 9;
+int motorA_dir1 = 43;
+int motorA_dir2 = 42;
+int encA_ch1 = 3; 
+int encA_ch2 = 49;
+volatile long encCountA = 0;
+
+
+// Gripper motor
+int motorG = 5;
+int motorG_dir1 = 58;
+int motorG_dir2 = 59;
+
+// servo pin & variable
+int servoPin = 62; 
+int pingPin = 66; 
+int tiltPin = 63;
+float dur;
+float distL, distF, distR, dist_check, past_distL, past_distR;
+int Left = 1;
+int Front = 2;
+int Right = 3;
+void moving_arm(byte arm);
+
+// bluetooth
+int blu_for = 0;
+
+void setup()
+{
+  
+  Serial.begin(115200);
+  delay(1000);
+  Serial3.begin(115200); //for Bluetooth module
+  
+  //Set PWM 8KHz
+  TCCR1A = _BV(WGM10);
+  TCCR1B = _BV(CS11) | _BV(WGM12);
+  TCCR2A = _BV(WGM21) | _BV(WGM20);
+  TCCR2B = _BV(CS21);
+
+  // pin and interrupt initialization
+  pinMode(encL_ch1, INPUT);
+  pinMode(motorL_REV, OUTPUT);
+  pinMode(motorL_FOR, OUTPUT);
+
+  pinMode(encR_ch1, INPUT);
+  pinMode(motorR_REV, OUTPUT);
+  pinMode(motorR_FOR, OUTPUT);
+
+  pinMode(encA_ch1, INPUT);
+  pinMode(motorA_dir1, OUTPUT);
+  pinMode(motorA_dir2, OUTPUT);
+
+  pinMode(motorG_dir1, OUTPUT);
+  pinMode(motorG_dir2, OUTPUT);
+  
+  attachInterrupt(4, isr_process_encoderL, CHANGE);
+  attachInterrupt(5, isr_process_encoderR, CHANGE);
+  attachInterrupt(1, isr_process_encoderA, CHANGE);
+
+//  pin19state = digitalRead(encL_ch1);
+//  pin18state = digitalRead(encR_ch1);
+
+  // Servo
+  myservo.attach(servoPin);
+  myservo.write(90);
+
+
+}
+
+void loop()
+{
+  // initialize encoder Counts
+  encCountL = 0;
+  encCountR = 0;
+  encCountA = 0;
+
+  // bluetooth portion
+  if (Serial3.available() > 0)
+  {
+    blu_for = Serial3.read();
+    if (blu_for == 'w') // forward
+    {
+      moveforward(20); 
+      blu_for = 0;
+    }
+    if (blu_for == 's') // back
+    {
+      turn(2,2,20);
+    }
+    if (blu_for == 'a') // left
+    {
+      turn(2,1,20);
+    }
+    if (blu_for == 'd') // right
+    {
+      turn(1,2,20);
+    }
+    if (blu_for == 'u') // raise arm
+    {
+      move_arm(1,10);
+    }
+    if (blu_for == 'l') // lower arm
+    {
+      move_arm(2,5);
+    }
+    if (blu_for == 'o') // open gripper
+    {
+      gripper(1,20);
+    }
+    if (blu_for == 'c') // close gripper
+    {
+      gripper(2,20);
+    }
+    if (blu_for == 'r') // read left distance
+    {
+      dist(1,200);
+    }
+    if (blu_for == 't') // read front distance
+    {
+      dist(2,100);
+    }
+    if (blu_for == 'y') // read right distance
+    {
+      dist(3,200);
+    }
+      while (blu_for == 'v') // autonomous portion
+      {
+        encCountL = 0;
+        encCountR = 0;
+        dist(2,200);
+        if (distF < 4.5) // turning
+          {
+            dist(3,500);
+            if (distR < distL)
+            {
+              turn(2,1,600);
+            }
+            else if (distL < distR)
+            {
+              turn(1,2,600);
+            }
+        }
+        else
+        {
+          // Run Motor On
+          digitalWrite(motorL_FOR,HIGH);
+          analogWrite(motorL,240);
+          digitalWrite(motorR_FOR,HIGH);
+          analogWrite(motorR,250);
+          dist(1,200);
+
+          // maintaining straight aways
+          if (distL < 5)
+          {
+            digitalWrite(motorR_FOR,LOW);
+          }
+          else if (distL > 12 && distL < 150)
+          {
+            digitalWrite(motorL_FOR,LOW);
+          }
+          if (distF < 10) // prepare for turning
+          {
+            dist(2,20);
+            if (distF < 4.5)
+            {
+              digitalWrite(motorL_FOR,LOW);
+              digitalWrite(motorR_FOR,LOW);
+            }
+          }
+        }
+      }
+    }
+}
+
+ float dist(int direct,int duration){ 
+ 
+ if (direct == Front) {
+ pos = 90;
+ myservo.write(pos);
+ delay(duration);
+ distF = dist_read();
+ Serial.println(distF);
+}
+ 
+ 
+ else if (direct== Right){
+ pos = 0;
+ myservo.write(pos);
+ delay(duration);
+ distR = dist_read();
+ Serial.println(distR);
+ }
+ 
+ 
+ else if (direct== Left){
+ pos = 180;
+ myservo.write(pos);
+ delay(duration);
+ distL = dist_read();
+ Serial.println(distL);
+ }
+}
+ 
+float dist_read() { 
+  delay(200);  
+  pinMode(pingPin, OUTPUT);
+  digitalWrite(pingPin, LOW);
+  delayMicroseconds(5);
+  digitalWrite(pingPin, HIGH);
+  delayMicroseconds(10);
+  pinMode(pingPin, INPUT);
+  dur= pulseIn(pingPin, HIGH);
+  return dur/148;
+}
+
+// Encoder Left wheel
+void isr_process_encoderL(void)
+{
+  if (motorL_REV)
+  {
+    encCountL++;
+  }
+  else if (motorL_FOR)
+  {
+    encCountL--;  
+  }
+}
+// Encoder Right wheel
+void isr_process_encoderR(void)
+{
+  if (motorL_FOR)
+  {
+    encCountR++;
+  }
+  else if (motorR_REV)
+  {
+    encCountR--;
+  }
+}
+
+// Encoder arm
+void isr_process_encoderA(void)
+{
+  if (motorA_dir1)
+  {
+    encCountA++;
+  }
+  else if (motorA_dir2)
+  {
+    encCountA--;
+  }
+}
+
+void moveforward(int enc_Value) // function for moving forward
+{
+  while (encCountL <= enc_Value)
+  {
+    digitalWrite(motorL_FOR,HIGH);
+    analogWrite(motorL,142);
+    digitalWrite(motorR_FOR,HIGH);
+    analogWrite(motorR,150);
+  }
+  digitalWrite(motorL_FOR,LOW);
+  digitalWrite(motorR_FOR,LOW);
+
+  encCountL = 0;
+  encCountR = 0;
+}
+
+void turn(int left,int right, int enc_Value) // function for all turning and reverse movement
+{
+  digitalWrite(motorL_FOR,LOW);
+  digitalWrite(motorR_REV,LOW);
+  digitalWrite(motorR_FOR,LOW);
+  digitalWrite(motorL_REV,LOW);
+  if (left == 1 && right == 2)
+  {
+    while (abs(abs(encCountL)+abs(encCountR))/2 < enc_Value)
+    {
+      digitalWrite(motorL_FOR,HIGH);
+      analogWrite(motorL,240);
+      digitalWrite(motorR_REV,HIGH);
+      analogWrite(motorR,250);
+    }
+    digitalWrite(motorL_FOR,LOW);
+    digitalWrite(motorR_REV,LOW);
+  }
+  else if (left == 2 && right == 1)
+  {
+    while (abs(abs(encCountL)+abs(encCountR))/2 < enc_Value)
+    {
+      digitalWrite(motorL_REV,HIGH);
+      analogWrite(motorL,240);
+      digitalWrite(motorR_FOR,HIGH);
+      analogWrite(motorR,250);
+    }
+    digitalWrite(motorR_FOR,LOW);
+    digitalWrite(motorL_REV,LOW);
+  }
+  else if (left == 2 && right == 2)
+  {
+    while (abs(encCountL) < enc_Value)
+    {
+      digitalWrite(motorL_REV,HIGH);
+      analogWrite(motorL,240);
+      digitalWrite(motorR_REV,HIGH);
+      analogWrite(motorR,250);
+    }
+    digitalWrite(motorL_REV,LOW);
+    digitalWrite(motorR_REV,LOW);
+  }
+
+}
+
+void move_arm(int dir, int enc_Value)
+{
+  if (dir == 2)
+  {
+    while (abs(encCountA) <= enc_Value)
+    {
+      digitalWrite(motorA_dir1,HIGH);
+      analogWrite(motorA,50);
+    }
+    digitalWrite(motorA_dir1,LOW);
+  }
+  else if (dir == 1)
+  {
+    while (abs(encCountA) <= enc_Value)
+    {
+      digitalWrite(motorA_dir2,HIGH);
+      analogWrite(motorA,120);
+    }
+    digitalWrite(motorA_dir2,LOW);
+  }
+}
+
+void gripper(int dir, int duration)
+{
+  if (dir == 1)
+  {
+    digitalWrite(motorG_dir1,HIGH);
+    analogWrite(motorG,100);
+    delay(duration);
+    digitalWrite(motorG_dir1,LOW);
+  }
+  else if (dir == 2)
+  {
+    digitalWrite(motorG_dir2,HIGH);
+    analogWrite(motorG,100);
+    delay(duration);
+    digitalWrite(motorG_dir2,LOW);
+  }
+}
